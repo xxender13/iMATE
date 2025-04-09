@@ -1,0 +1,13 @@
+{
+  "files": {
+    "main.css": "/iMATE/static/css/main.42d2eb2a.css",
+    "main.js": "/iMATE/static/js/main.d87d3c4c.js",
+    "index.html": "/iMATE/index.html",
+    "main.42d2eb2a.css.map": "/iMATE/static/css/main.42d2eb2a.css.map",
+    "main.d87d3c4c.js.map": "/iMATE/static/js/main.d87d3c4c.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.42d2eb2a.css",
+    "static/js/main.d87d3c4c.js"
+  ]
+}
