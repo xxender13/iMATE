@@ -44,7 +44,7 @@ const Home = () => {
           transition={{ duration: 0.6, delay: 0.4 }}
         >
           <button
-            onClick={() => navigate("/iMATE/about")}
+            onClick={() => navigate("/about")}
             className="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-xl font-medium transition-all shadow-lg"
           >
             Get to Know Us More
@@ -110,7 +110,7 @@ const Home = () => {
           Whether you're a new student or an admin looking to support them — we’ve got the tools you need.
         </p>
         <button
-          onClick={() => navigate("/iMATE/login")}
+          onClick={() => navigate("/login")}
           className="bg-black hover:bg-gray-900 px-6 py-3 rounded-xl font-medium transition"
         >
           Log In
