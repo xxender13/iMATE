@@ -1,5 +1,11 @@
 // src/App.jsx
-import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Navigate,
+  useLocation,
+} from "react-router-dom";
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth, db } from "./firebase";
@@ -18,6 +24,7 @@ import StudentDashboard from "./pages/StudentDashboard";
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import ModuleDetail from "./pages/ModuleDetail";
 
+// Inner routes component to dynamically show navbar/footer
 const AppRoutes = ({ user, role }) => {
   const location = useLocation();
   const hideNavbarPaths = ["/student-dashboard", "/admin-dashboard"];
@@ -27,26 +34,53 @@ const AppRoutes = ({ user, role }) => {
     <>
       {showNavbar && <Navbar />}
       <Routes>
+        {/* Redirect base path to /home */}
         <Route path="/" element={<Navigate to="/home" />} />
         <Route path="/iMATE" element={<Navigate to="/home" />} />
         <Route path="/home" element={<Home />} />
         <Route path="/about" element={<About />} />
         <Route
           path="/login"
-          element={!user ? <Login /> : role === "admin" ? <Navigate to="/admin-dashboard" /> : <Navigate to="/student-dashboard" />}
+          element={
+            !user ? (
+              <Login />
+            ) : role === "admin" ? (
+              <Navigate to="/admin-dashboard" />
+            ) : (
+              <Navigate to="/student-dashboard" />
+            )
+          }
         />
         <Route path="/signup" element={<Signup />} />
         <Route
           path="/student-dashboard"
-          element={user && role === "student" ? <StudentDashboard /> : <Navigate to="/login" />}
+          element={
+            user && role === "student" ? (
+              <StudentDashboard />
+            ) : (
+              <Navigate to="/login" />
+            )
+          }
         />
         <Route
           path="/admin-dashboard"
-          element={user && role === "admin" ? <AdminDashboard /> : <Navigate to="/login" />}
+          element={
+            user && role === "admin" ? (
+              <AdminDashboard />
+            ) : (
+              <Navigate to="/login" />
+            )
+          }
         />
         <Route
           path="/modules/:id"
-          element={user && role === "student" ? <ModuleDetail /> : <Navigate to="/login" />}
+          element={
+            user && role === "student" ? (
+              <ModuleDetail />
+            ) : (
+              <Navigate to="/login" />
+            )
+          }
         />
       </Routes>
       {showNavbar && <Footer />}
@@ -85,7 +119,8 @@ function App() {
     };
   }, []);
 
-  if (loading) return <div className="text-white text-center p-10">Loading...</div>;
+  if (loading)
+    return <div className="text-white text-center p-10">Loading...</div>;
 
   return (
     <Router basename="/iMATE">
