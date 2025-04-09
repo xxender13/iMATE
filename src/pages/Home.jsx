@@ -1,5 +1,7 @@
+// src/pages/Home.jsx
 import { motion } from "framer-motion";
 import HeroSection from "../components/HeroSection";
+import { useNavigate } from "react-router-dom";
 
 const fadeUp = {
   hidden: { opacity: 0, y: 50 },
@@ -7,6 +9,8 @@ const fadeUp = {
 };
 
 const Home = () => {
+  const navigate = useNavigate();
+
   return (
     <div className="min-h-screen font-sans relative text-white overflow-hidden">
       {/* BACKGROUND LAYER */}
@@ -40,11 +44,12 @@ const Home = () => {
           animate="visible"
           transition={{ duration: 0.6, delay: 0.4 }}
         >
-          <a href="/about">
-            <button className="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-xl font-medium transition-all shadow-lg">
-              Get to Know Us More
-            </button>
-          </a>
+          <button
+            onClick={() => navigate("/about")}
+            className="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-xl font-medium transition-all shadow-lg"
+          >
+            Get to Know Us More
+          </button>
         </motion.div>
       </section>
 
@@ -105,11 +110,12 @@ const Home = () => {
         <p className="text-gray-100 mb-6 max-w-xl mx-auto">
           Whether you're a new student or an admin looking to support them — we’ve got the tools you need.
         </p>
-        <a href="/login">
-          <button className="bg-black hover:bg-gray-900 px-6 py-3 rounded-xl font-medium transition">
-            Log In
-          </button>
-        </a>
+        <button
+          onClick={() => navigate("/login")}
+          className="bg-black hover:bg-gray-900 px-6 py-3 rounded-xl font-medium transition"
+        >
+          Log In
+        </button>
       </motion.section>
 
       {/* HERO 3D BACKGROUND */}
