@@ -715,12 +715,26 @@ export default function StudentDashboard() {
             <img src={mediaImg} alt="" className="rounded shadow w-full" />
           </div>
         )}
-        {!mediaYouTube && !mediaPdf && !mediaImg && (
-          <div className="text-center py-10 text-gray-500">
-            <FiImage className="mx-auto h-10 w-10 mb-2" />
-            No media available
+         {/* Text Materials */}
+      {selectedChapter.materials
+        ?.filter((m) => m.type === "text")
+        .map((m, i) => (
+          <div key={i} className="mb-6">
+            <h3 className="font-medium text-gray-900 mb-2">{m.title}</h3>
+            <div className="p-4 bg-gray-100 rounded shadow text-gray-700 whitespace-pre-wrap">
+              {m.content}
+            </div>
           </div>
-        )}
+        ))}
+
+        {!mediaYouTube && !mediaPdf && !mediaImg && 
+  selectedChapter.materials?.filter(m => m.type === 'text').length === 0 && (
+  <div className="text-center py-10 text-gray-500">
+    <FiImage className="mx-auto h-10 w-10 mb-2" />
+    No media available
+  </div>
+)}
+
 
         {/* Quiz */}
         <div className="mt-8">
