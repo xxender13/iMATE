@@ -1,3 +1,4 @@
+// src/pages/StudentDashboard.jsx
 import { useState, useEffect, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { auth, db } from "../firebase/firebase";
@@ -13,18 +14,73 @@ import {
   FiAward,
   FiClock,
   FiArrowLeft,
-  FiBarChart2,
   FiChevronRight,
 } from "react-icons/fi";
+
+/* -------------------------------- Helpers -------------------------------- */
+
+// Convert arrays OR {0:...,1:...} objects into arrays (stable numeric order)
+function toArray(x) {
+  if (Array.isArray(x)) return x;
+  if (x && typeof x === "object") {
+    return Object.keys(x)
+      .sort((a, b) => Number(a) - Number(b))
+      .map((k) => x[k]);
+  }
+  return [];
+}
 
 // YouTube helper
 function getYoutubeEmbed(url) {
   if (!url) return "";
-  const regExp =
-    /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+  const regExp = /^.*(youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/i;
   const match = url.match(regExp);
-  const id = match && match[2].length === 11 ? match[2] : null;
+  const id = match && match[2]?.length === 11 ? match[2] : null;
   return id ? `https://www.youtube.com/embed/${id}` : "";
+}
+
+// Normalize quizzes from Firestore into canonical shape:
+// [{ title?, id?, questions: [{ question, options: [...], correct: number }]}]
+function normalizeQuizzes(chapter) {
+  const raw = chapter?.quizzes ?? chapter?.quiz ?? chapter?.mcqs ?? [];
+  const quizzes = toArray(raw);
+
+  return quizzes
+    .map((q) => {
+      // questions may be an array or object; also support single-question shape
+      let qs = [];
+      if (q?.questions) {
+        qs = toArray(q.questions).map((qq) => ({
+          question: String(qq?.question ?? ""),
+          options: toArray(qq?.options).map((o) => String(o)),
+          correct: Number(qq?.correct ?? 0),
+        }));
+      } else if (q?.question && (q?.options || q?.options === 0)) {
+        qs = [
+          {
+            question: String(q.question),
+            options: toArray(q.options).map((o) => String(o)),
+            correct: Number(q?.correct ?? 0),
+          },
+        ];
+      }
+      return { ...q, questions: qs };
+    })
+    .filter((q) => (q.questions?.length ?? 0) > 0);
+}
+
+// Normalize materials list (array or object)
+function normalizeMaterials(chapter) {
+  const mats = toArray(chapter?.materials);
+  return mats
+    .map((m) => ({
+      ...m,
+      type: m?.type || "",
+      title: m?.title || "",
+      url: m?.url || "",
+      content: m?.content || "",
+    }))
+    .filter(Boolean);
 }
 
 // Background gradient
@@ -56,37 +112,42 @@ const YouTubeViewer = ({ url }) => {
   const embedUrl = getYoutubeEmbed(url);
   return embedUrl ? (
     <div className="w-full rounded-md overflow-hidden shadow-md relative pb-[56.25%]">
-  <iframe
-    src={embedUrl}
-    title="YouTube video player"
-    frameBorder="0"
-    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-    allowFullScreen
-    className="absolute top-0 left-0 w-full h-full"
-  />
-</div>
-
+      <iframe
+        src={embedUrl}
+        title="YouTube video player"
+        frameBorder="0"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        allowFullScreen
+        className="absolute top-0 left-0 w-full h-full"
+      />
+    </div>
   ) : (
     <div className="text-center p-4">Invalid YouTube URL</div>
   );
 };
 
+/* --------------------------- Student Dashboard --------------------------- */
+
 export default function StudentDashboard() {
   const navigate = useNavigate();
 
-  // State
+  // UI state
   const [activeTab, setActiveTab] = useState("home");
   const [courses, setCourses] = useState([]);
   const [selectedCourse, setSelectedCourse] = useState(null);
   const [selectedChapter, setSelectedChapter] = useState(null);
-  const [userData, setUserData] = useState(null);
+
+  // quiz state (supports multi-question)
   const [quizIndex, setQuizIndex] = useState(0);
-  const [selectedAnswer, setSelectedAnswer] = useState("");
+  const [selectedAnswers, setSelectedAnswers] = useState({}); // { qIdx: optionIdx }
   const [submitted, setSubmitted] = useState(false);
+
+  // user + load state
+  const [userData, setUserData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Redirect if logged out
+  /* ---------------------------- Auth redirect ---------------------------- */
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       if (!u) navigate("/login");
@@ -96,7 +157,7 @@ export default function StudentDashboard() {
 
   const uid = auth.currentUser?.uid;
 
-  // Fetch user & all courses
+  /* -------------------------- Fetch user & courses ----------------------- */
   useEffect(() => {
     if (!uid) {
       setLoading(false);
@@ -136,39 +197,49 @@ export default function StudentDashboard() {
     };
   }, [uid]);
 
-  // ─── Enrolled‐Courses Logic ───────────────────────────────────────────────────
-  // Convert whatever form you're storing to an array of IDs
+  /* --------------------------- Enrolled courses -------------------------- */
   const enrolledIds = userData?.enrolledCourses
     ? Array.isArray(userData.enrolledCourses)
       ? userData.enrolledCourses
       : Object.keys(userData.enrolledCourses)
     : [];
-  // Filter only those courses
+
   const myCourses = courses.filter((c) => enrolledIds.includes(c.id));
 
-  // ─── Progress Calculations ─────────────────────────────────────────────────────
+  /* --------------------------- Progress helpers -------------------------- */
+  const getCourseDoneCountSafe = useCallback(
+    (courseId, chapters = []) => {
+      if (!userData?.completedQuizzes) return 0;
+      const keys = Object.keys(userData.completedQuizzes[courseId] || {});
+      return keys.filter((k) => {
+        const idx = Number(k.replace("chapter", ""));
+        return Number.isInteger(idx) && chapters[idx];
+      }).length;
+    },
+    [userData]
+  );
+
   const getOverallProgress = useCallback(() => {
-    if (!myCourses.length || !userData?.completedQuizzes) return 0;
+    if (!myCourses.length) return 0;
     let total = 0,
       done = 0;
     myCourses.forEach((course) => {
       const ch = course.chapters || [];
       total += ch.length;
-      done += Object.keys(userData.completedQuizzes[course.id] || {}).length;
+      done += getCourseDoneCountSafe(course.id, ch);
     });
     return total ? Math.floor((done / total) * 100) : 0;
-  }, [myCourses, userData]);
+  }, [myCourses, getCourseDoneCountSafe]);
 
   const getCourseProgress = useCallback(
     (courseId, chapters = []) => {
-      if (!userData?.completedQuizzes) return 0;
-      const done = Object.keys(userData.completedQuizzes[courseId] || {}).length;
+      const done = getCourseDoneCountSafe(courseId, chapters);
       return chapters.length ? Math.floor((done / chapters.length) * 100) : 0;
     },
-    [userData]
+    [getCourseDoneCountSafe]
   );
 
-  // ─── Handlers ─────────────────────────────────────────────────────────────────
+  /* -------------------------------- Actions ------------------------------ */
   const handleLogout = async () => {
     try {
       await signOut(auth);
@@ -177,34 +248,65 @@ export default function StudentDashboard() {
     }
   };
 
+  // Auto-grade & persist a quiz attempt for the whole quiz (all questions)
   const submitQuiz = async () => {
-    if (!selectedAnswer) return alert("Please select an answer.");
-    if (!selectedCourse || !selectedChapter)
-      return alert("Missing course or chapter.");
+    if (!selectedCourse || !selectedChapter) {
+      alert("Missing course or chapter.");
+      return;
+    }
 
-    const chapterIndex = selectedCourse.chapters.findIndex(
-      (c) => c.title === selectedChapter.title
+    const quizzes = normalizeQuizzes(selectedChapter);
+    const quiz = quizzes?.[quizIndex];
+    const questions = quiz?.questions || [];
+
+    if (!questions.length) {
+      alert("No questions found.");
+      return;
+    }
+
+    // Ensure each question was answered
+    const unanswered = questions.findIndex(
+      (_q, i) => selectedAnswers[i] === undefined
+    );
+    if (unanswered !== -1) {
+      alert(`Please answer question ${unanswered + 1}.`);
+      return;
+    }
+
+    // Score: % correct
+    let correctCount = 0;
+    const answersPayload = questions.map((q, i) => {
+      const sel = Number(selectedAnswers[i]);
+      const correctIndex = Number(q.correct ?? 0);
+      const isCorrect = sel === correctIndex;
+      if (isCorrect) correctCount += 1;
+      return {
+        question: q.question,
+        selected: q.options?.[sel],
+        correct: q.options?.[correctIndex],
+        selectedIndex: sel,
+        correctIndex,
+        isCorrect,
+      };
+    });
+    const score = Math.round((correctCount / questions.length) * 100);
+
+    // Persist under chapter index key (chapter0, chapter1, ...)
+    const chapterIndex = Math.max(
+      0,
+      (toArray(selectedCourse.chapters) || []).findIndex(
+        (c) => c?.title === selectedChapter?.title
+      )
     );
     const chapterKey = `chapter${chapterIndex}`;
-    const quiz = selectedChapter.quizzes[quizIndex];
-    const question = quiz?.questions?.[0];
-    if (!question) return alert("Bad quiz data.");
 
-    const isCorrect = parseInt(selectedAnswer) === question.correct;
     const payload = {
       completedQuizzes: {
         [selectedCourse.id]: {
-          ...userData.completedQuizzes?.[selectedCourse.id],
+          ...userData?.completedQuizzes?.[selectedCourse.id],
           [chapterKey]: {
-            score: isCorrect ? 100 : 0,
-            answers: [
-              {
-                question: question.question,
-                selected: question.options[parseInt(selectedAnswer)],
-                correct: question.options[question.correct],
-                isCorrect,
-              },
-            ],
+            score,
+            answers: answersPayload,
             completedAt: new Date().toISOString(),
           },
         },
@@ -214,12 +316,13 @@ export default function StudentDashboard() {
     try {
       await setDoc(doc(db, "users", uid), payload, { merge: true });
       setSubmitted(true);
-    } catch {
+    } catch (e) {
+      console.error(e);
       alert("Failed to submit quiz.");
     }
   };
 
-  // ─── Header ────────────────────────────────────────────────────────────────────
+  /* ------------------------------ Header UI ------------------------------ */
   const DashboardHeader = () => (
     <header className="sticky top-0 z-50 bg-white border-b shadow-sm">
       <div className="max-w-7xl mx-auto flex justify-between items-center h-16 px-4">
@@ -229,13 +332,9 @@ export default function StudentDashboard() {
           </Link>
           <nav className="hidden md:flex ml-8 space-x-6">
             {[
-              { key: "home", icon: <FiHome className="mr-1" />, label: "Home" },
-              {
-                key: "courses",
-                icon: <FiBook className="mr-1" />,
-                label: "My Courses",
-              },
-            ].map(({ key, icon, label }) => (
+              { key: "home", label: "Home", icon: <FiHome className="mr-1" /> },
+              { key: "courses", label: "My Courses", icon: <FiBook className="mr-1" /> },
+            ].map(({ key, label, icon }) => (
               <button
                 key={key}
                 onClick={() => {
@@ -259,7 +358,7 @@ export default function StudentDashboard() {
           <span className="hidden md:inline text-[#003DA5] mr-4 font-medium">
             {userData?.firstName && userData?.lastName
               ? `${userData.firstName} ${userData.lastName}`
-              : auth.currentUser?.email.split("@")[0]}
+              : auth.currentUser?.email?.split("@")[0]}
           </span>
           <button
             onClick={handleLogout}
@@ -272,30 +371,28 @@ export default function StudentDashboard() {
     </header>
   );
 
-  // ─── renderHome ────────────────────────────────────────────────────────────────
+  /* ------------------------------- HOME TAB ------------------------------- */
   const renderHome = () => {
     const overall = getOverallProgress();
-    const recent = [];
 
+    const recent = [];
     if (userData?.completedQuizzes) {
-      Object.entries(userData.completedQuizzes).forEach(
-        ([courseId, chapters]) => {
-          const course = courses.find((c) => c.id === courseId);
-          if (!course) return;
-          Object.entries(chapters).forEach(([ckey, data]) => {
-            if (!data.completedAt) return;
-            const idx = parseInt(ckey.replace("chapter", ""), 10);
-            const chap = course.chapters?.[idx];
-            if (!chap) return;
-            recent.push({
-              courseTitle: course.title,
-              chapterTitle: chap.title || `Chapter ${idx + 1}`,
-              score: data.score,
-              date: new Date(data.completedAt),
-            });
+      Object.entries(userData.completedQuizzes).forEach(([courseId, chapters]) => {
+        const course = courses.find((c) => c.id === courseId);
+        if (!course) return;
+        Object.entries(chapters).forEach(([ckey, data]) => {
+          if (!data?.completedAt) return;
+          const idx = parseInt(ckey.replace("chapter", ""), 10);
+          const chap = course.chapters?.[idx];
+          if (!chap) return;
+          recent.push({
+            courseTitle: course.title,
+            chapterTitle: chap.title || `Chapter ${idx + 1}`,
+            score: data.score,
+            date: new Date(data.completedAt),
           });
-        }
-      );
+        });
+      });
     }
     recent.sort((a, b) => b.date - a.date);
 
@@ -311,7 +408,7 @@ export default function StudentDashboard() {
                     Welcome back,{" "}
                     {userData?.firstName && userData?.lastName
                       ? `${userData.firstName} ${userData.lastName}`
-                      : auth.currentUser?.email.split("@")[0]}
+                      : auth.currentUser?.email?.split("@")[0]}
                     !
                   </h2>
                   <p className="mt-2 text-blue-100">
@@ -326,6 +423,7 @@ export default function StudentDashboard() {
                 </button>
               </div>
             </div>
+
             {/* Progress */}
             <div className="px-4 py-6">
               <h3 className="text-lg font-medium text-gray-900 mb-2">
@@ -340,11 +438,11 @@ export default function StudentDashboard() {
               <div className="flex justify-between text-sm text-gray-600">
                 <span>{overall}% Complete</span>
                 <span>
-                  {myCourses.length} Course
-                  {myCourses.length !== 1 ? "s" : ""}
+                  {myCourses.length} Course{myCourses.length !== 1 ? "s" : ""}
                 </span>
               </div>
             </div>
+
             {/* Quick Stats */}
             <div className="px-4 py-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="bg-white p-4 rounded-lg shadow">
@@ -364,8 +462,8 @@ export default function StudentDashboard() {
                   <div className="ml-4">
                     <p className="text-sm text-gray-500">Completed Chapters</p>
                     <p className="text-xl font-semibold text-gray-900">
-                      {Object.values(userData?.completedQuizzes || {}).reduce(
-                        (a, c) => a + Object.keys(c).length,
+                      {myCourses.reduce(
+                        (acc, c) => acc + getCourseDoneCountSafe(c.id, c.chapters || []),
                         0
                       )}
                     </p>
@@ -384,8 +482,10 @@ export default function StudentDashboard() {
                         Object.values(userData?.completedQuizzes || {}).forEach(
                           (course) =>
                             Object.values(course).forEach((chap) => {
-                              total += chap.score || 0;
-                              count++;
+                              if (typeof chap?.score === "number") {
+                                total += chap.score;
+                                count++;
+                              }
                             })
                         );
                         return count ? `${Math.round(total / count)}%` : "N/A";
@@ -396,6 +496,7 @@ export default function StudentDashboard() {
               </div>
             </div>
           </div>
+
           {/* Recent Activity */}
           <div className="bg-white rounded-lg shadow mb-8 p-4">
             <h3 className="text-lg font-medium text-gray-900 mb-4">
@@ -409,12 +510,8 @@ export default function StudentDashboard() {
                     className="flex justify-between items-center p-3 rounded hover:bg-gray-50"
                   >
                     <div>
-                      <p className="font-medium text-[#003DA5]">
-                        {act.courseTitle}
-                      </p>
-                      <p className="text-sm text-gray-500">
-                        {act.chapterTitle}
-                      </p>
+                      <p className="font-medium text-[#003DA5]">{act.courseTitle}</p>
+                      <p className="text-sm text-gray-500">{act.chapterTitle}</p>
                     </div>
                     <div className="text-right">
                       <span
@@ -440,6 +537,7 @@ export default function StudentDashboard() {
               </div>
             )}
           </div>
+
           {/* Continue Learning */}
           <div className="bg-white rounded-lg shadow p-4">
             <h3 className="text-lg font-medium text-gray-900 mb-4">
@@ -451,19 +549,11 @@ export default function StudentDashboard() {
                   key={course.id}
                   className="border rounded-lg p-4 flex flex-col shadow hover:shadow-md transition"
                 >
-                  <h4 className="font-semibold text-gray-900 mb-2">
-                    {course.title}
-                  </h4>
-                  <p className="text-sm text-gray-500 flex-grow">
-                    {course.description}
-                  </p>
+                  <h4 className="font-semibold text-gray-900 mb-2">{course.title}</h4>
+                  <p className="text-sm text-gray-500 flex-grow">{course.description}</p>
                   <div className="mt-4">
                     <div className="text-xs text-gray-500 mb-1">
-                      {getCourseProgress(
-                        course.id,
-                        course.chapters || []
-                      )}
-                      % Complete
+                      {getCourseProgress(course.id, course.chapters || [])}% Complete
                     </div>
                     <div className="w-full bg-gray-200 h-2 rounded-full">
                       <div
@@ -505,7 +595,7 @@ export default function StudentDashboard() {
     );
   };
 
-  // ─── renderCourses ────────────────────────────────────────────────────────────
+  /* ----------------------------- COURSES LIST ---------------------------- */
   const renderCourses = () => (
     <div className="flex-grow py-6">
       <div className="max-w-7xl mx-auto px-4">
@@ -570,7 +660,7 @@ export default function StudentDashboard() {
     </div>
   );
 
-  // ─── renderCourseDetail ───────────────────────────────────────────────────────
+  /* ---------------------------- COURSE DETAIL ---------------------------- */
   const renderCourseDetail = () => {
     if (!selectedCourse) {
       return (
@@ -594,17 +684,12 @@ export default function StudentDashboard() {
           <h1 className="text-2xl font-bold text-gray-900 mb-2">
             {selectedCourse.title}
           </h1>
-          <p className="text-gray-500 mb-6">
-            {selectedCourse.description}
-          </p>
-          <h3 className="text-lg font-medium text-gray-900 mb-3">
-            Chapters
-          </h3>
+          <p className="text-gray-500 mb-6">{selectedCourse.description}</p>
+          <h3 className="text-lg font-medium text-gray-900 mb-3">Chapters</h3>
           <ul className="space-y-4">
-            {selectedCourse.chapters?.map((chap, idx) => {
+            {toArray(selectedCourse.chapters).map((chap, idx) => {
               const key = `chapter${idx}`;
-              const done =
-                !!userData?.completedQuizzes?.[selectedCourse.id]?.[key];
+              const done = !!userData?.completedQuizzes?.[selectedCourse.id]?.[key];
               return (
                 <li
                   key={idx}
@@ -613,34 +698,30 @@ export default function StudentDashboard() {
                   <div className="flex items-center">
                     <div
                       className={`h-8 w-8 flex items-center justify-center rounded-full ${
-                        done
-                          ? "bg-green-100 text-green-600"
-                          : "bg-gray-100 text-gray-400"
+                        done ? "bg-green-100 text-green-600" : "bg-gray-100 text-gray-400"
                       }`}
                     >
                       {done ? <FiCheckCircle /> : idx + 1}
                     </div>
                     <div className="ml-4">
                       <p className="font-medium text-gray-900">
-                        {chap.title || `Chapter ${idx + 1}`}
+                        {chap?.title || `Chapter ${idx + 1}`}
                       </p>
-                      <p className="text-sm text-gray-500">
-                        {chap.description}
-                      </p>
+                      <p className="text-sm text-gray-500">{chap?.description}</p>
                     </div>
                   </div>
                   <button
                     onClick={() => {
-                      setSelectedChapter(chap);
+                      setSelectedCourse((prev) => prev); // keep
+                      setSelectedChapter({ ...chap, __chapterIndex: idx }); // store index explicitly
                       setQuizIndex(0);
-                      setSelectedAnswer("");
+                      setSelectedAnswers({});
                       setSubmitted(false);
                       setActiveTab("chapterView");
                     }}
                     className="bg-[#003DA5] text-white px-3 py-1 rounded"
                   >
-                    {done ? "Review" : "Start"}{" "}
-                    <FiChevronRight className="inline ml-1" />
+                    {done ? "Review" : "Start"} <FiChevronRight className="inline ml-1" />
                   </button>
                 </li>
               );
@@ -651,222 +732,227 @@ export default function StudentDashboard() {
     );
   };
 
-  // ─── renderChapterView ────────────────────────────────────────────────────────
- const renderChapterView = () => {
-  if (!selectedCourse || !selectedChapter) {
+  /* ----------------------------- CHAPTER VIEW ---------------------------- */
+  const renderChapterView = () => {
+    if (!selectedCourse || !selectedChapter) {
+      return (
+        <div className="flex-grow py-10 text-center text-gray-700">
+          No chapter selected.{" "}
+          <button onClick={() => setActiveTab("coursesDetail")} className="underline">
+            Back
+          </button>
+        </div>
+      );
+    }
+
+    const ci =
+      typeof selectedChapter.__chapterIndex === "number"
+        ? selectedChapter.__chapterIndex
+        : Math.max(
+            0,
+            toArray(selectedCourse.chapters).findIndex(
+              (c) => c?.title === selectedChapter?.title
+            )
+          );
+    const chapterKey = `chapter${ci}`;
+    const result = userData?.completedQuizzes?.[selectedCourse.id]?.[chapterKey];
+
+    // Materials (normalized)
+    const mats = normalizeMaterials(selectedChapter);
+    const mediaYouTube = mats.find((m) => m?.type === "youtube")?.url;
+    const mediaPdf = mats.find((m) => m?.type === "pdf")?.url;
+    const mediaImg = mats.find((m) => m?.type === "image")?.url;
+    const textBlocks = mats.filter((m) => m?.type === "text");
+
+    // Quizzes (normalized)
+    const quizzes = normalizeQuizzes(selectedChapter);
+    const hasQuizzes = (quizzes?.length ?? 0) > 0;
+    const activeQuiz = quizzes?.[quizIndex];
+    const questions = activeQuiz?.questions || [];
+
     return (
-      <div className="flex-grow py-10 text-center text-gray-700">
-        No chapter selected.{" "}
-        <button
-          onClick={() => setActiveTab("coursesDetail")}
-          className="underline"
-        >
-          Back
-        </button>
-      </div>
-    );
-  }
+      <div className="flex-grow py-6">
+        <div className="max-w-3xl mx-auto px-4">
+          <button
+            onClick={() => setActiveTab("coursesDetail")}
+            className="flex items-center text-[#003DA5] mb-4"
+          >
+            <FiArrowLeft className="mr-1" /> Back to Chapters
+          </button>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">
+            {selectedChapter.title}
+          </h1>
+          <p className="text-gray-500 mb-6">{selectedCourse.title}</p>
 
-  const ci = selectedCourse.chapters.findIndex(
-    (c) => c.title === selectedChapter.title
-  );
-  const key = `chapter${ci}`;
-  const result = userData?.completedQuizzes?.[selectedCourse.id]?.[key];
-  const mediaYouTube = selectedChapter.materials?.find(
-    (m) => m.type === "youtube"
-  )?.url;
-  const mediaPdf = selectedChapter.materials?.find(
-    (m) => m.type === "pdf"
-  )?.url;
-  const mediaImg = selectedChapter.materials?.find(
-    (m) => m.type === "image"
-  )?.url;
-
-  return (
-    <div className="flex-grow py-6">
-      <div className="max-w-3xl mx-auto px-4">
-        <button
-          onClick={() => setActiveTab("coursesDetail")}
-          className="flex items-center text-[#003DA5] mb-4"
-        >
-          <FiArrowLeft className="mr-1" /> Back to Chapters
-        </button>
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">
-          {selectedChapter.title}
-        </h1>
-        <p className="text-gray-500 mb-6">{selectedCourse.title}</p>
-
-        {/* Media */}
-        {mediaYouTube && (
-          <div className="mb-6">
-            <h3 className="font-medium text-gray-900 mb-2">Video Lecture</h3>
-            <YouTubeViewer url={mediaYouTube} />
-          </div>
-        )}
-        {mediaPdf && (
-          <div className="mb-6">
-            <h3 className="font-medium text-gray-900 mb-2">PDF</h3>
-            <PDFViewer url={mediaPdf} />
-          </div>
-        )}
-        {mediaImg && (
-          <div className="mb-6">
-            <h3 className="font-medium text-gray-900 mb-2">Image</h3>
-            <img src={mediaImg} alt="" className="rounded shadow w-full" />
-          </div>
-        )}
-         {/* Text Materials */}
-      {selectedChapter.materials
-        ?.filter((m) => m.type === "text")
-        .map((m, i) => (
-          <div key={i} className="mb-6">
-            <h3 className="font-medium text-gray-900 mb-2">{m.title}</h3>
-            <div className="p-4 bg-gray-100 rounded shadow text-gray-700 whitespace-pre-wrap">
-              {m.content}
+          {/* Media */}
+          {mediaYouTube && (
+            <div className="mb-6">
+              <h3 className="font-medium text-gray-900 mb-2">Video Lecture</h3>
+              <YouTubeViewer url={mediaYouTube} />
             </div>
-          </div>
-        ))}
-
-        {!mediaYouTube && !mediaPdf && !mediaImg && 
-  selectedChapter.materials?.filter(m => m.type === 'text').length === 0 && (
-  <div className="text-center py-10 text-gray-500">
-    <FiImage className="mx-auto h-10 w-10 mb-2" />
-    No media available
-  </div>
-)}
-
-
-        {/* Quiz */}
-        <div className="mt-8">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">
-            Chapter Quiz
-          </h3>
-
-          {result || submitted ? (
-            <div className="bg-green-50 p-4 rounded shadow">
-              <p className="font-medium text-green-800 flex items-center">
-                <FiCheckCircle className="mr-2" /> Chapter Completed
-              </p>
-              <p className="mt-2 text-gray-700">
-                {result?.score ? (
-                  <>
-                    Your score:{" "}
-                    <span className="font-semibold text-green-900">
-                      {result?.score}%
-                    </span>
-                  </>
-                ) : (
-                  <>Marked complete</>
-                )}
-              </p>
-              {(result?.answers || []).map((ans, i) => (
-                <div key={i} className="mt-3 p-3 bg-white rounded shadow">
-                  <p className="font-medium">{ans.question}</p>
-                  <p>Your answer: {ans.selected}</p>
-                  <p>Correct: {ans.correct}</p>
-                </div>
-              ))}
-              <button
-                onClick={() => setActiveTab("coursesDetail")}
-                className="mt-4 bg-[#003DA5] text-white px-4 py-2 rounded"
-              >
-                Return to Course
-              </button>
+          )}
+          {mediaPdf && (
+            <div className="mb-6">
+              <h3 className="font-medium text-gray-900 mb-2">PDF</h3>
+              <PDFViewer url={mediaPdf} />
             </div>
-          ) : selectedChapter.quizzes?.length &&
-            !selectedChapter.quizzes[quizIndex]?.questions?.length ? (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                submitQuiz();
-              }}
-              className="space-y-4"
-            >
-              <p className="font-medium text-gray-900">
-                {selectedChapter.quizzes[quizIndex].questions[0].question}
-              </p>
-              <div className="space-y-2">
-                {selectedChapter.quizzes[quizIndex].questions[0].options.map(
-                  (opt, i) => (
-                    <label
-                      key={i}
-                      className={`block p-3 border rounded cursor-pointer ${
-                        selectedAnswer === String(i)
-                          ? "bg-blue-50 border-blue-300"
-                          : "border-gray-200"
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="answer"
-                        value={i}
-                        checked={selectedAnswer === String(i)}
-                        onChange={() => setSelectedAnswer(String(i))}
-                        className="mr-2"
-                      />
-                      {opt}
-                    </label>
-                  )
-                )}
+          )}
+          {mediaImg && (
+            <div className="mb-6">
+              <h3 className="font-medium text-gray-900 mb-2">Image</h3>
+              <img src={mediaImg} alt="" className="rounded shadow w-full" />
+            </div>
+          )}
+
+          {/* Text blocks */}
+          {textBlocks.map((m, i) => (
+            <div key={i} className="mb-6">
+              <h3 className="font-medium text-gray-900 mb-2">{m.title}</h3>
+              <div className="p-4 bg-gray-100 rounded shadow text-gray-700 whitespace-pre-wrap">
+                {m.content}
               </div>
-              <button
-                type="submit"
-                disabled={!selectedAnswer}
-                className="w-full bg-[#003DA5] text-white py-2 rounded"
-              >
-                Submit Answer
-              </button>
-            </form>
-          ) : (
-            <div className="text-center py-10">
-              <p className="text-gray-700 mb-4">
-                No quiz for this chapter — mark it as complete to continue.
-              </p>
-              <button
-                onClick={async () => {
-                  if (!selectedCourse || !selectedChapter) return;
-                  const chapterIndex = selectedCourse.chapters.findIndex(
-                    (c) => c.title === selectedChapter.title
-                  );
-                  const chapterKey = `chapter${chapterIndex}`;
+            </div>
+          ))}
 
-                  try {
-                    await setDoc(
-                      doc(db, "users", uid),
-                      {
-                        completedQuizzes: {
-                          [selectedCourse.id]: {
-                            ...userData?.completedQuizzes?.[selectedCourse.id],
-                            [chapterKey]: {
-                              score: 100,
-                              answers: [],
-                              completedAt: new Date().toISOString(),
+          {!mediaYouTube && !mediaPdf && !mediaImg && textBlocks.length === 0 && (
+            <div className="text-center py-10 text-gray-500">
+              <FiImage className="mx-auto h-10 w-10 mb-2" />
+              No media available
+            </div>
+          )}
+
+          {/* Quiz */}
+          <div className="mt-8">
+            <h3 className="text-lg font-medium text-gray-900 mb-4">Chapter Quiz</h3>
+
+            {/* Completed */}
+            {result || submitted ? (
+              <div className="bg-green-50 p-4 rounded shadow">
+                <p className="font-medium text-green-800 flex items-center">
+                  <FiCheckCircle className="mr-2" /> Chapter Completed
+                </p>
+                <p className="mt-2 text-gray-700">
+                  {typeof (result?.score ?? null) === "number" ? (
+                    <>
+                      Your score:{" "}
+                      <span className="font-semibold text-green-900">
+                        {result?.score}%</span>
+                    </>
+                  ) : (
+                    <>Marked complete</>
+                  )}
+                </p>
+                {(result?.answers || []).map((ans, i) => (
+                  <div key={i} className="mt-3 p-3 bg-white rounded shadow">
+                    <p className="font-medium">{ans.question}</p>
+                    <p>Your answer: {ans.selected}</p>
+                    <p>Correct: {ans.correct}</p>
+                  </div>
+                ))}
+                <button
+                  onClick={() => setActiveTab("coursesDetail")}
+                  className="mt-4 bg-[#003DA5] text-white px-4 py-2 rounded"
+                >
+                  Return to Course
+                </button>
+              </div>
+            ) : hasQuizzes && questions.length > 0 ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  submitQuiz();
+                }}
+                className="space-y-6"
+              >
+                {activeQuiz?.title && (
+                  <p className="text-sm text-gray-500">Quiz: {activeQuiz.title}</p>
+                )}
+
+                {questions.map((q, qi) => (
+                  <div key={qi} className="space-y-3">
+                    <p className="font-medium text-gray-900">
+                      {qi + 1}. {q.question}
+                    </p>
+                    <div className="space-y-2">
+                      {(q.options || []).map((opt, oi) => {
+                        const isSelected = Number(selectedAnswers[qi]) === oi;
+                        return (
+                          <label
+                            key={oi}
+                            className={`block p-3 border rounded cursor-pointer ${
+                              isSelected
+                                ? "bg-blue-50 border-blue-300"
+                                : "border-gray-200"
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name={`q-${qi}`}
+                              value={oi}
+                              checked={isSelected}
+                              onChange={() =>
+                                setSelectedAnswers((prev) => ({ ...prev, [qi]: oi }))
+                              }
+                              className="mr-2"
+                            />
+                            {opt}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+
+                <button
+                  type="submit"
+                  className="w-full bg-[#003DA5] text-white py-2 rounded"
+                >
+                  Submit Answers
+                </button>
+              </form>
+            ) : (
+              // No quiz present -> allow mark complete
+              <div className="text-center py-10">
+                <p className="text-gray-700 mb-4">
+                  No quiz for this chapter — mark it as complete to continue.
+                </p>
+                <button
+                  onClick={async () => {
+                    try {
+                      await setDoc(
+                        doc(db, "users", uid),
+                        {
+                          completedQuizzes: {
+                            [selectedCourse.id]: {
+                              ...userData?.completedQuizzes?.[selectedCourse.id],
+                              [chapterKey]: {
+                                score: 100,
+                                answers: [],
+                                completedAt: new Date().toISOString(),
+                              },
                             },
                           },
                         },
-                      },
-                      { merge: true }
-                    );
-                    alert("Marked as complete!");
-                    setSubmitted(true);
-                  } catch {
-                    alert("Failed to mark complete.");
-                  }
-                }}
-                className="bg-[#003DA5] text-white px-4 py-2 rounded"
-              >
-                Next
-              </button>
-            </div>
-          )}
+                        { merge: true }
+                      );
+                      setSubmitted(true);
+                    } catch {
+                      alert("Failed to mark complete.");
+                    }
+                  }}
+                  className="bg-[#003DA5] text-white px-4 py-2 rounded"
+                >
+                  Mark Complete
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  );
-};
+    );
+  };
 
-
-  // ─── Main render ──────────────────────────────────────────────────────────────
+  /* ------------------------------ Main render ---------------------------- */
   if (loading)
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -879,6 +965,7 @@ export default function StudentDashboard() {
         </div>
       </div>
     );
+
   if (error)
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -901,7 +988,6 @@ export default function StudentDashboard() {
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <SluBackground />
       <DashboardHeader />
-
       {activeTab === "home" && renderHome()}
       {activeTab === "courses" && renderCourses()}
       {activeTab === "coursesDetail" && renderCourseDetail()}
